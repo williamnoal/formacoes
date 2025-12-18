@@ -3,298 +3,293 @@ import pandas as pd
 import sqlite3
 import google.generativeai as genai
 import os
-from datetime import datetime
+import time
 
-# --- Configuração da Página ---
+# --- Configuração Inicial ---
 st.set_page_config(
-    page_title="Portal de Formação - SMED POA",
-    page_icon="📚",
-    layout="wide",
-    initial_sidebar_state="expanded"
+    page_title="Portal Formação SMED",
+    page_icon="🎓",
+    layout="wide"
 )
 
-# --- Estilização CSS Personalizada (Minimalista e Cores de POA) ---
+# --- CSS para Interface Moderna e Minimalista ---
 st.markdown("""
     <style>
     .main {
-        background-color: #f8f9fa;
+        background-color: #f9fafb; /* Fundo levemente cinza */
     }
-    h1 {
-        color: #2c3e50;
+    .stButton>button {
+        width: 100%;
+        border-radius: 8px;
+        height: 3em;
+        font-weight: 600;
     }
     div[data-testid="stMetricValue"] {
-        color: #007bff;
+        font-size: 2rem;
+        color: #1e3a8a; /* Azul escuro corporativo */
+    }
+    h1, h2, h3 {
+        color: #1f2937;
+        font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif;
+    }
+    .stTabs [data-baseweb="tab-list"] {
+        gap: 24px;
+    }
+    .stTabs [data-baseweb="tab"] {
+        height: 50px;
+        white-space: pre-wrap;
+        background-color: #fff;
+        border-radius: 4px;
+        box-shadow: 0 1px 2px rgba(0,0,0,0.05);
+        padding: 0 20px;
+    }
+    .stTabs [aria-selected="true"] {
+        background-color: #eff6ff;
+        color: #1d4ed8;
+        border-bottom: 2px solid #1d4ed8;
     }
     </style>
-    """, unsafe_allow_html=True)
+""", unsafe_allow_html=True)
 
-# --- Configuração do Banco de Dados (SQLite) ---
+# --- Gerenciamento de Banco de Dados ---
 def init_db():
-    conn = sqlite3.connect('formacao_smed.db')
+    conn = sqlite3.connect('smed_data.db')
     c = conn.cursor()
-    # Tabela simples e eficiente para armazenar registros
+    # Adicionada coluna 'categoria' para classificação via IA
     c.execute('''
-        CREATE TABLE IF NOT EXISTS registros (
+        CREATE TABLE IF NOT EXISTS formacoes (
             id INTEGER PRIMARY KEY AUTOINCREMENT,
-            professor TEXT,
+            nome TEXT,
             escola TEXT,
             evento TEXT,
-            data DATE,
+            categoria TEXT,
             horas REAL,
-            data_upload TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+            data_registro TIMESTAMP DEFAULT CURRENT_TIMESTAMP
         )
     ''')
     conn.commit()
     conn.close()
 
-def save_to_db(df):
-    conn = sqlite3.connect('formacao_smed.db')
-    # Assume que o DataFrame já está normalizado
-    df.to_sql('registros', conn, if_exists='append', index=False)
+def save_batch(data_list):
+    conn = sqlite3.connect('smed_data.db')
+    c = conn.cursor()
+    c.executemany('''
+        INSERT INTO formacoes (nome, escola, evento, categoria, horas)
+        VALUES (?, ?, ?, ?, ?)
+    ''', data_list)
+    conn.commit()
     conn.close()
 
 def load_data():
-    conn = sqlite3.connect('formacao_smed.db')
+    conn = sqlite3.connect('smed_data.db')
     try:
-        df = pd.read_sql("SELECT * FROM registros", conn)
+        df = pd.read_sql("SELECT * FROM formacoes", conn)
     except:
         df = pd.DataFrame()
     conn.close()
     return df
 
-# Novas funções para apagar dados
-def delete_all_data():
-    conn = sqlite3.connect('formacao_smed.db')
+def clear_db():
+    conn = sqlite3.connect('smed_data.db')
     c = conn.cursor()
-    c.execute('DELETE FROM registros')
+    c.execute("DELETE FROM formacoes")
     conn.commit()
     conn.close()
 
-def delete_record(record_id):
-    conn = sqlite3.connect('formacao_smed.db')
-    c = conn.cursor()
-    c.execute('DELETE FROM registros WHERE id=?', (record_id,))
-    conn.commit()
-    conn.close()
-
-# --- Função de Integração com Gemini ---
-def ask_gemini(api_key, query, data_summary):
+# --- IA Generativa (Classificação Automática) ---
+def classify_event_with_ai(event_name):
+    """Usa o Gemini para categorizar o evento baseado no nome."""
+    api_key = os.environ.get("GEMINI_API_KEY")
+    
     if not api_key:
-        return "⚠️ Por favor, insira a API Key da Gemini na barra lateral."
-    
-    genai.configure(api_key=api_key)
-    model = genai.GenerativeModel('gemini-2.0-flash-exp') # Modelo rápido e eficiente
-    
-    prompt = f"""
-    Você é um assistente especialista em dados da Secretaria de Educação de Porto Alegre.
-    Aqui está um resumo dos dados de formação continuada:
-    {data_summary}
-    
-    Pergunta do usuário: {query}
-    
-    Responda de forma concisa, profissional e em português. Foque em insights pedagógicos ou administrativos.
-    """
-    
+        return "Geral" # Fallback se sem chave
+
     try:
+        genai.configure(api_key=api_key)
+        model = genai.GenerativeModel('gemini-2.0-flash-exp')
+        
+        prompt = f"""
+        Classifique o evento de formação de professores "{event_name}" em APENAS UMA das seguintes categorias:
+        - Tecnologia
+        - Pedagógica
+        - Administrativa
+        - Inclusão
+        - Linguagens
+        - Outros
+        
+        Responda apenas com a palavra da categoria.
+        """
         response = model.generate_content(prompt)
-        return response.text
-    except Exception as e:
-        return f"Erro ao consultar Gemini: {e}"
+        return response.text.strip()
+    except:
+        return "Geral"
 
 # --- Interface Principal ---
-
 def main():
     init_db()
     
-    # Sidebar
-    st.sidebar.image("https://upload.wikimedia.org/wikipedia/commons/thumb/8/8c/Brasao_Porto_Alegre.svg/1200px-Brasao_Porto_Alegre.svg.png", width=80)
-    st.sidebar.title("Painel de Controle")
-    st.sidebar.markdown("**Secretaria de Educação**\n\nUnidade de Formação Continuada")
-    
-    # Configuração da API Key (Segurança: input ou variável de ambiente)
-    api_key = st.sidebar.text_input("Gemini API Key", type="password", help="Insira sua chave para ativar a IA Analista")
-    if not api_key and "GEMINI_API_KEY" in os.environ:
-        api_key = os.environ["GEMINI_API_KEY"]
+    # Cabeçalho Limpo
+    col_logo, col_title = st.columns([1, 5])
+    with col_logo:
+        # Placeholder de logo simples
+        st.markdown("### 🎓 SMED") 
+    with col_title:
+        st.title("Portal de Formação Continuada")
+        st.markdown("Gestão inteligente de horas e indicadores.")
 
-    # Adicionado item "Gerenciar Dados" na navegação
-    page = st.sidebar.radio("Navegação", ["Dashboard", "Inserir Planilhas", "Relatórios Detalhados", "Gerenciar Dados", "Assistente IA"])
+    # Navegação por Abas (Mais limpo)
+    tab_dash, tab_upload, tab_reports, tab_config = st.tabs([
+        "📊 Dashboard Geral", 
+        "📂 Novo Registro (Upload)", 
+        "📑 Relatórios Dinâmicos",
+        "⚙️ Configurações"
+    ])
 
-    # Carregar dados atuais
-    df_total = load_data()
+    df = load_data()
 
-    # --- PÁGINA: DASHBOARD ---
-    if page == "Dashboard":
-        st.title("📊 Visão Geral das Formações")
-        
-        if df_total.empty:
-            st.info("Nenhum dado encontrado. Vá para 'Inserir Planilhas' para começar.")
+    # --- ABA 1: DASHBOARD ---
+    with tab_dash:
+        if df.empty:
+            st.info("👋 Bem-vindo! O sistema está vazio. Vá para a aba 'Novo Registro' para começar.")
         else:
-            # KPIs
-            col1, col2, col3, col4 = st.columns(4)
-            col1.metric("Total de Horas", f"{df_total['horas'].sum():.1f} h")
-            col2.metric("Professores Capacitados", df_total['professor'].nunique())
-            col3.metric("Escolas Envolvidas", df_total['escola'].nunique())
-            col4.metric("Eventos Realizados", df_total['evento'].nunique())
+            # Métricas Topo
+            m1, m2, m3, m4 = st.columns(4)
+            m1.metric("Total de Horas", f"{df['horas'].sum():.0f}h")
+            m2.metric("Professores", df['nome'].nunique())
+            m3.metric("Escolas", df['escola'].nunique())
+            m4.metric("Eventos", df['evento'].nunique())
             
-            st.divider()
+            st.markdown("---")
             
-            # Gráficos
-            c1, c2 = st.columns(2)
+            # Gráficos Lado a Lado
+            g1, g2 = st.columns(2)
             
-            with c1:
-                st.subheader("Top 5 Escolas (Horas Totais)")
-                top_escolas = df_total.groupby('escola')['horas'].sum().sort_values(ascending=False).head(5)
-                st.bar_chart(top_escolas)
-                
-            with c2:
-                st.subheader("Distribuição por Evento")
-                top_eventos = df_total['evento'].value_counts().head(5)
-                st.bar_chart(top_eventos)
-
-    # --- PÁGINA: UPLOAD ---
-    elif page == "Inserir Planilhas":
-        st.title("📂 Alimentar Base de Dados")
-        st.markdown("Faça upload das listas de presença (Excel). O sistema irá unificar automaticamente.")
-        
-        uploaded_file = st.file_uploader("Arraste seu arquivo Excel aqui", type=['xlsx', 'xls'])
-        
-        if uploaded_file:
-            try:
-                # Ler Excel
-                df_upload = pd.read_excel(uploaded_file)
-                
-                st.write("Prévia dos dados carregados:")
-                st.dataframe(df_upload.head())
-                
-                # Mapeamento de Colunas (Para garantir padronização)
-                st.subheader("🔧 Mapear Colunas")
-                st.info("Selecione qual coluna do seu Excel corresponde aos campos do sistema.")
-                
-                cols = df_upload.columns.tolist()
-                
-                col_prof = st.selectbox("Coluna: Nome do Professor", cols, index=0)
-                col_escola = st.selectbox("Coluna: Escola", cols, index=1 if len(cols)>1 else 0)
-                col_evento = st.selectbox("Coluna: Nome do Evento", cols, index=2 if len(cols)>2 else 0)
-                col_horas = st.selectbox("Coluna: Carga Horária", cols, index=3 if len(cols)>3 else 0)
-                
-                # Data pode ser input manual ou coluna
-                use_date_col = st.checkbox("A data está no arquivo excel?")
-                if use_date_col:
-                    col_data = st.selectbox("Coluna: Data", cols)
+            with g1:
+                st.subheader("Distribuição por Categoria (IA)")
+                # Gráfico de rosca simples usando Streamlit nativo ou Altair
+                if 'categoria' in df.columns:
+                    cat_counts = df['categoria'].value_counts()
+                    st.bar_chart(cat_counts, color="#1e3a8a")
                 else:
-                    manual_date = st.date_input("Selecione a data do evento")
+                    st.warning("Dados de categoria não disponíveis.")
+
+            with g2:
+                st.subheader("Top 5 Escolas com Mais Horas")
+                top_schools = df.groupby('escola')['horas'].sum().sort_values(ascending=False).head(5)
+                st.bar_chart(top_schools, color="#3b82f6")
+
+    # --- ABA 2: UPLOAD INTELIGENTE ---
+    with tab_upload:
+        st.markdown("#### 1. Detalhes do Evento")
+        
+        with st.container(border=True):
+            col_evt, col_date = st.columns([3, 1])
+            event_name = col_evt.text_input("Nome do Evento de Formação", placeholder="Ex: Curso de Alfabetização Digital")
+            event_hours = col_date.number_input("Carga Horária (por participante)", min_value=1.0, step=0.5, value=4.0)
+            
+            st.info("💡 A Inteligência Artificial irá classificar este evento automaticamente ao salvar.")
+
+        st.markdown("#### 2. Lista de Presença")
+        uploaded_file = st.file_uploader("Carregar planilha (Excel)", type=['xlsx', 'xls'], label_visibility="collapsed")
+
+        if uploaded_file and event_name:
+            try:
+                df_upload = pd.read_excel(uploaded_file)
+                st.success("Planilha carregada!")
                 
-                if st.button("Processar e Salvar no Banco"):
-                    # Preparar DataFrame Padronizado
-                    df_final = pd.DataFrame()
-                    df_final['professor'] = df_upload[col_prof]
-                    df_final['escola'] = df_upload[col_escola]
-                    df_final['evento'] = df_upload[col_evento]
+                with st.expander("👀 Visualizar e Mapear Colunas", expanded=True):
+                    st.dataframe(df_upload.head(3), use_container_width=True)
                     
-                    # Tratamento de horas (garantir numérico)
-                    df_final['horas'] = pd.to_numeric(df_upload[col_horas], errors='coerce').fillna(0)
-                    
-                    if use_date_col:
-                        df_final['data'] = pd.to_datetime(df_upload[col_data], errors='coerce').dt.date
-                    else:
-                        df_final['data'] = manual_date
+                    st.markdown("**Selecione as colunas correspondentes na sua planilha:**")
+                    c1, c2 = st.columns(2)
+                    col_nome_map = c1.selectbox("Coluna com Nome do Professor", df_upload.columns)
+                    col_escola_map = c2.selectbox("Coluna com Nome da Escola", df_upload.columns)
+                
+                if st.button("🚀 Processar e Salvar Dados", type="primary"):
+                    with st.status("Processando...", expanded=True) as status:
+                        st.write("🔍 Analisando evento com IA...")
+                        ai_category = classify_event_with_ai(event_name)
+                        st.write(f"✅ Evento classificado como: **{ai_category}**")
                         
-                    save_to_db(df_final)
-                    st.success("✅ Dados inseridos com sucesso! O banco de dados foi atualizado.")
-                    st.balloons()
-                    
+                        st.write("💾 Formatando dados...")
+                        # Preparar lista de tuplas para inserção eficiente
+                        data_to_insert = []
+                        for _, row in df_upload.iterrows():
+                            # Tratamento básico de nulos
+                            nome = str(row[col_nome_map]).strip()
+                            escola = str(row[col_escola_map]).strip()
+                            
+                            if nome and escola and nome.lower() != 'nan':
+                                data_to_insert.append((
+                                    nome, 
+                                    escola, 
+                                    event_name, 
+                                    ai_category, 
+                                    float(event_hours)
+                                ))
+                        
+                        if data_to_insert:
+                            save_batch(data_to_insert)
+                            status.update(label="Concluído!", state="complete", expanded=False)
+                            st.balloons()
+                            time.sleep(1)
+                            st.rerun()
+                        else:
+                            st.error("Nenhum dado válido encontrado nas colunas selecionadas.")
+                            
             except Exception as e:
-                st.error(f"Erro ao processar arquivo: {e}")
+                st.error(f"Erro ao ler arquivo: {e}")
+        elif uploaded_file and not event_name:
+            st.warning("⚠️ Por favor, preencha o Nome do Evento antes de processar.")
 
-    # --- PÁGINA: RELATÓRIOS ---
-    elif page == "Relatórios Detalhados":
-        st.title("📑 Relatórios Detalhados")
-        
-        if df_total.empty:
-            st.warning("Sem dados.")
+    # --- ABA 3: RELATÓRIOS DINÂMICOS ---
+    with tab_reports:
+        if df.empty:
+            st.warning("Sem dados para gerar relatórios.")
         else:
-            filter_type = st.selectbox("Filtrar por:", ["Professor", "Escola"])
+            st.markdown("#### 🔍 Explorador de Dados")
             
-            if filter_type == "Professor":
-                prof_list = df_total['professor'].unique()
-                selected_prof = st.selectbox("Selecione o Professor", prof_list)
-                
-                df_filtered = df_total[df_total['professor'] == selected_prof]
-                
-                st.write(f"**Total de horas de {selected_prof}:** {df_filtered['horas'].sum()}h")
-                st.dataframe(df_filtered[['evento', 'data', 'horas', 'escola']])
-                
-            elif filter_type == "Escola":
-                school_list = df_total['escola'].unique()
-                selected_school = st.selectbox("Selecione a Escola", school_list)
-                
-                df_filtered = df_total[df_total['escola'] == selected_school]
-                
-                st.write(f"**Total de horas da escola {selected_school}:** {df_filtered['horas'].sum()}h")
-                
-                # Agrupado por professor desta escola
-                st.write("Horas por professor nesta escola:")
-                st.dataframe(df_filtered.groupby('professor')['horas'].sum().reset_index().sort_values('horas', ascending=False))
+            # Filtros Inteligentes
+            c_filter1, c_filter2 = st.columns(2)
+            group_by_col = c_filter1.selectbox("Agrupar dados por:", ["escola", "nome", "categoria", "evento"], format_func=lambda x: x.capitalize())
+            
+            # Tabela Dinâmica
+            pivot_df = df.groupby(group_by_col)['horas'].sum().reset_index().sort_values('horas', ascending=False)
+            pivot_df.columns = [group_by_col.capitalize(), "Total de Horas"]
+            
+            st.dataframe(
+                pivot_df,
+                use_container_width=True,
+                hide_index=True,
+                column_config={
+                    "Total de Horas": st.column_config.ProgressColumn(
+                        "Total de Horas",
+                        format="%.1f h",
+                        min_value=0,
+                        max_value=float(pivot_df["Total de Horas"].max()),
+                    )
+                }
+            )
+            
+            # Exportação
+            csv = pivot_df.to_csv(index=False).encode('utf-8')
+            st.download_button(
+                "📥 Baixar Relatório (CSV)",
+                data=csv,
+                file_name=f"relatorio_por_{group_by_col}.csv",
+                mime="text/csv"
+            )
 
-    # --- PÁGINA: GERENCIAR DADOS ---
-    elif page == "Gerenciar Dados":
-        st.title("🗑️ Gerenciar e Apagar Dados")
+    # --- ABA 4: CONFIGURAÇÕES ---
+    with tab_config:
+        st.markdown("### Zona de Perigo")
+        st.warning("Ações aqui são irreversíveis.")
         
-        if df_total.empty:
-            st.info("O banco de dados está vazio.")
-        else:
-            st.markdown("### Visualizar Registros")
-            st.dataframe(df_total)
-            
-            st.divider()
-            
-            col1, col2 = st.columns(2)
-            
-            with col1:
-                st.subheader("Apagar Registro Específico")
-                st.markdown("Use o **ID** da tabela acima para apagar uma linha específica (erro de digitação, duplicidade, etc).")
-                record_id_to_delete = st.number_input("Digite o ID do registro:", min_value=0, step=1)
-                
-                if st.button("Apagar Registro", type="primary"):
-                    if record_id_to_delete in df_total['id'].values:
-                        delete_record(record_id_to_delete)
-                        st.success(f"Registro ID {record_id_to_delete} apagado com sucesso!")
-                        st.rerun() # Recarrega a página para atualizar a tabela
-                    else:
-                        st.error("ID não encontrado no banco de dados.")
-            
-            with col2:
-                st.subheader("Limpar Banco de Dados")
-                st.warning("⚠️ Atenção: Esta ação apagará TODOS os registros e não pode ser desfeita.")
-                if st.button("Apagar TODOS os Dados"):
-                    delete_all_data()
-                    st.success("Banco de dados limpo com sucesso!")
-                    st.rerun()
-
-    # --- PÁGINA: ASSISTENTE IA ---
-    elif page == "Assistente IA":
-        st.title("🤖 Assistente de Análise (Gemini)")
-        st.markdown("Faça perguntas sobre os dados. Ex: *'Qual escola tem o maior engajamento?'* ou *'Faça um resumo das formações deste mês'*.")
-        
-        if df_total.empty:
-            st.error("Preciso de dados para analisar.")
-        else:
-            # Preparar resumo para a IA (evita enviar tokens demais se o banco for gigante)
-            summary_stats = f"""
-            Total de registros: {len(df_total)}
-            Total de horas somadas: {df_total['horas'].sum()}
-            Top 5 escolas: {df_total.groupby('escola')['horas'].sum().nlargest(5).to_dict()}
-            Top 5 eventos: {df_total['evento'].value_counts().head(5).to_dict()}
-            Média de horas por evento: {df_total['horas'].mean():.2f}
-            """
-            
-            user_question = st.text_area("Sua pergunta:")
-            
-            if st.button("Perguntar"):
-                with st.spinner("Analisando dados..."):
-                    answer = ask_gemini(api_key, user_question, summary_stats)
-                    st.markdown("### Resposta:")
-                    st.write(answer)
+        if st.button("🗑️ Limpar TODO o Banco de Dados"):
+            clear_db()
+            st.success("Banco de dados resetado.")
+            time.sleep(1)
+            st.rerun()
 
 if __name__ == "__main__":
     main()
